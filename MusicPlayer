@@ -1,0 +1,373 @@
+import requests
+import pandas as pd
+import tkinter as tk
+from tkinter import ttk, messagebox
+from threading import Thread
+import time
+import webbrowser
+from datetime import datetime
+
+
+class NeteaseMusicCrawlerGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("网易云音乐榜单爬虫 v1.0")
+        self.root.geometry("1200x700")
+        self.root.configure(bg="#f0f0f0")
+
+        # 榜单定义
+        self.top_lists = {
+            "飙升榜": "19723756",
+            "热歌榜": "3778678",
+            "新歌榜": "3779629",
+            "原创榜": "2884035"
+        }
+
+        # 数据缓存
+        self.data_cache = {}
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        # 标题区域
+        title_frame = tk.Frame(self.root, bg="#d43c33", height=80)
+        title_frame.pack(fill="x", pady=(0, 20))
+        title_frame.pack_propagate(False)
+
+        title_label = tk.Label(title_frame, text="🎵 网易云音乐榜单爬虫",
+                               font=("Microsoft YaHei", 24, "bold"),
+                               fg="white", bg="#d43c33")
+        title_label.pack(expand=True)
+
+        subtitle_label = tk.Label(title_frame, text="选择榜单查看实时排名",
+                                  font=("Microsoft YaHei", 12),
+                                  fg="white", bg="#d43c33")
+        subtitle_label.pack(expand=True)
+
+        # 主内容区域
+        main_frame = tk.Frame(self.root, bg="#f0f0f0")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        # 左侧控制面板
+        left_frame = tk.Frame(main_frame, bg="#ffffff", width=250,
+                              relief="solid", borderwidth=1)
+        left_frame.pack(side="left", fill="y", padx=(0, 20))
+        left_frame.pack_propagate(False)
+
+        # 榜单选择标题
+        list_title = tk.Label(left_frame, text="📋 榜单选择",
+                              font=("Microsoft YaHei", 14, "bold"),
+                              bg="#ffffff", pady=15)
+        list_title.pack(fill="x")
+
+        # 分隔线
+        ttk.Separator(left_frame, orient="horizontal").pack(fill="x", padx=10)
+
+        # 榜单按钮
+        self.list_buttons = {}
+        for list_name in self.top_lists.keys():
+            btn = tk.Button(left_frame, text=list_name,
+                            font=("Microsoft YaHei", 12),
+                            bg="#f8f9fa", fg="#333333",
+                            relief="flat", height=2,
+                            command=lambda name=list_name: self.select_list(name))
+            btn.pack(fill="x", padx=15, pady=8)
+            self.list_buttons[list_name] = btn
+
+        # 爬取所有按钮
+        ttk.Separator(left_frame, orient="horizontal").pack(fill="x", padx=10, pady=10)
+
+        self.crawl_all_btn = tk.Button(left_frame, text="🔄 爬取全部榜单",
+                                       font=("Microsoft YaHei", 12, "bold"),
+                                       bg="#1890ff", fg="white",
+                                       command=self.crawl_all_lists,
+                                       height=2)
+        self.crawl_all_btn.pack(fill="x", padx=15, pady=5)
+
+        # 状态信息
+        self.status_label = tk.Label(left_frame, text="就绪",
+                                     font=("Microsoft YaHei", 10),
+                                     bg="#ffffff", fg="#666666")
+        self.status_label.pack(side="bottom", fill="x", padx=15, pady=15)
+
+        # 右侧数据显示区域
+        right_frame = tk.Frame(main_frame, bg="#ffffff",
+                               relief="solid", borderwidth=1)
+        right_frame.pack(side="left", fill="both", expand=True)
+
+        # 当前榜单信息
+        info_frame = tk.Frame(right_frame, bg="#ffffff", height=70)
+        info_frame.pack(fill="x", padx=20, pady=20)
+        info_frame.pack_propagate(False)
+
+        self.current_list_label = tk.Label(info_frame, text="请选择榜单",
+                                           font=("Microsoft YaHei", 16, "bold"),
+                                           bg="#ffffff", fg="#333333")
+        self.current_list_label.pack(anchor="w")
+
+        self.song_count_label = tk.Label(info_frame, text="",
+                                         font=("Microsoft YaHei", 12),
+                                         bg="#ffffff", fg="#666666")
+        self.song_count_label.pack(anchor="w", pady=(5, 0))
+
+        # 数据表格
+        table_frame = tk.Frame(right_frame, bg="#ffffff")
+        table_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        # 创建表格
+        columns = ("排名", "歌名", "歌手", "时长", "播放")
+        self.tree = ttk.Treeview(table_frame, columns=columns,
+                                 show="headings", height=20)
+
+        # 设置列宽和标题
+        column_widths = {"排名": 60, "歌名": 300, "歌手": 200, "时长": 80, "播放": 100}
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=column_widths.get(col, 120),
+                             anchor="center" if col in ["排名", "时长", "播放"] else "w")
+
+        # 添加滚动条
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical",
+                                  command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # 绑定双击事件播放歌曲
+        self.tree.bind("<Double-1>", self.play_song)
+
+        # 底部按钮区域
+        button_frame = tk.Frame(right_frame, bg="#ffffff", height=60)
+        button_frame.pack(fill="x", padx=20, pady=(0, 20))
+        button_frame.pack_propagate(False)
+
+        self.export_btn = tk.Button(button_frame, text="📥 导出CSV",
+                                    font=("Microsoft YaHei", 11),
+                                    bg="#28a745", fg="white",
+                                    state="disabled",
+                                    command=self.export_to_csv)
+        self.export_btn.pack(side="left", padx=(0, 10))
+
+        self.refresh_btn = tk.Button(button_frame, text="🔄 刷新数据",
+                                     font=("Microsoft YaHei", 11),
+                                     bg="#ffc107", fg="#333333",
+                                     state="disabled",
+                                     command=self.refresh_current_list)
+        self.refresh_btn.pack(side="left")
+
+        # 当前选择的榜单
+        self.current_list = None
+
+    def select_list(self, list_name):
+        """选择榜单并显示数据"""
+        self.current_list = list_name
+
+        # 高亮当前选择的按钮
+        for name, btn in self.list_buttons.items():
+            if name == list_name:
+                btn.config(bg="#e6f7ff", fg="#1890ff", font=("Microsoft YaHei", 12, "bold"))
+            else:
+                btn.config(bg="#f8f9fa", fg="#333333", font=("Microsoft YaHei", 12))
+
+        # 更新标题
+        self.current_list_label.config(text=f"当前榜单：{list_name}")
+
+        # 检查是否有缓存数据
+        if list_name in self.data_cache:
+            self.display_data(self.data_cache[list_name])
+            self.export_btn.config(state="normal")
+            self.refresh_btn.config(state="normal")
+        else:
+            # 没有缓存，开始爬取
+            self.status_label.config(text=f"正在爬取{list_name}...", fg="#1890ff")
+            self.song_count_label.config(text="正在加载数据...")
+            Thread(target=self.crawl_list, args=(list_name,), daemon=True).start()
+
+    def crawl_list(self, list_name):
+        """爬取单个榜单数据"""
+        list_id = self.top_lists[list_name]
+        songs = []
+
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://music.163.com/'
+            }
+
+            # 使用API获取数据
+            api_url = f'https://music.163.com/api/playlist/detail?id={list_id}'
+            resp = requests.get(api_url, headers=headers, timeout=15)
+            data = resp.json()
+
+            if data['code'] == 200:
+                tracks = data['result']['tracks'][:20]  # 前20首
+
+                for idx, track in enumerate(tracks, start=1):
+                    song = {
+                        '排名': idx,
+                        '歌名': track['name'],
+                        '歌手': ', '.join([artist['name'] for artist in track['artists']]),
+                        '时长': f"{track['duration'] // 60000}:{str(track['duration'] % 60000 // 1000).zfill(2)}",
+                        '歌曲ID': track['id'],
+                        '播放链接': f'http://music.163.com/song/media/outer/url?id={track["id"]}.mp3'
+                    }
+                    songs.append(song)
+
+                # 缓存数据
+                self.data_cache[list_name] = songs
+
+                # 更新UI
+                self.root.after(0, self.display_data, songs)
+                self.root.after(0, self.update_status,
+                                f"成功爬取{list_name} ({len(songs)}首)", "#52c41a")
+                self.root.after(0, lambda: self.export_btn.config(state="normal"))
+                self.root.after(0, lambda: self.refresh_btn.config(state="normal"))
+            else:
+                self.root.after(0, self.update_status,
+                                f"API返回错误: {data.get('code')}", "#ff4d4f")
+
+        except Exception as e:
+            self.root.after(0, self.update_status,
+                            f"爬取失败: {str(e)}", "#ff4d4f")
+            self.root.after(0, lambda: self.song_count_label.config(
+                text=f"数据加载失败: {str(e)}"))
+
+    def display_data(self, songs):
+        """在表格中显示数据"""
+        # 清空表格
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # 插入新数据
+        for song in songs:
+            self.tree.insert("", "end", values=(
+                song['排名'],
+                song['歌名'],
+                song['歌手'],
+                song['时长'],
+                "▶ 播放"
+            ), tags=(str(song['歌曲ID']),))
+
+        # 更新歌曲计数
+        self.song_count_label.config(
+            text=f"共 {len(songs)} 首歌曲 | 最后更新: {datetime.now().strftime('%H:%M:%S')}")
+
+    def play_song(self, event):
+        """双击播放歌曲"""
+        item = self.tree.selection()[0]
+        song_id = self.tree.item(item, "tags")[0]
+
+        if song_id:
+            url = f'http://music.163.com/song/media/outer/url?id={song_id}.mp3'
+            webbrowser.open(url)
+            self.update_status(f"正在播放歌曲 (ID: {song_id})", "#1890ff")
+
+    def crawl_all_lists(self):
+        """爬取全部榜单"""
+        self.crawl_all_btn.config(state="disabled", text="正在爬取...")
+        self.update_status("开始爬取全部榜单...", "#1890ff")
+
+        def crawl_thread():
+            success_count = 0
+            for list_name in self.top_lists.keys():
+                if list_name not in self.data_cache:
+                    self.root.after(0, self.update_status,
+                                    f"正在爬取: {list_name}", "#1890ff")
+
+                    list_id = self.top_lists[list_name]
+                    songs = []
+
+                    try:
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            'Referer': 'https://music.163.com/'
+                        }
+
+                        api_url = f'https://music.163.com/api/playlist/detail?id={list_id}'
+                        resp = requests.get(api_url, headers=headers, timeout=15)
+                        data = resp.json()
+
+                        if data['code'] == 200:
+                            tracks = data['result']['tracks'][:20]
+
+                            for idx, track in enumerate(tracks, start=1):
+                                song = {
+                                    '排名': idx,
+                                    '歌名': track['name'],
+                                    '歌手': ', '.join([artist['name'] for artist in track['artists']]),
+                                    '时长': f"{track['duration'] // 60000}:{str(track['duration'] % 60000 // 1000).zfill(2)}",
+                                    '歌曲ID': track['id'],
+                                    '播放链接': f'http://music.163.com/song/media/outer/url?id={track["id"]}.mp3'
+                                }
+                                songs.append(song)
+
+                            self.data_cache[list_name] = songs
+                            success_count += 1
+
+                        time.sleep(2)  # 礼貌延迟
+
+                    except Exception as e:
+                        print(f"爬取{list_name}失败: {e}")
+
+            # 爬取完成
+            self.root.after(0, self.crawl_all_btn.config,
+                            {"state": "normal", "text": "🔄 爬取全部榜单"})
+            self.root.after(0, self.update_status,
+                            f"爬取完成！成功 {success_count}/{len(self.top_lists)} 个榜单",
+                            "#52c41a")
+
+            # 如果当前有选中的榜单，更新显示
+            if self.current_list and self.current_list in self.data_cache:
+                self.root.after(0, self.display_data, self.data_cache[self.current_list])
+                self.root.after(0, lambda: self.export_btn.config(state="normal"))
+                self.root.after(0, lambda: self.refresh_btn.config(state="normal"))
+
+        Thread(target=crawl_thread, daemon=True).start()
+
+    def refresh_current_list(self):
+        """刷新当前榜单数据"""
+        if self.current_list:
+            self.update_status(f"刷新{self_current_list}...", "#1890ff")
+            self.refresh_btn.config(state="disabled")
+
+            def refresh_thread():
+                # 从缓存中移除当前榜单，触发重新爬取
+                if self.current_list in self.data_cache:
+                    del self.data_cache[self.current_list]
+
+                # 重新爬取
+                self.crawl_list(self.current_list)
+                self.root.after(0, lambda: self.refresh_btn.config(state="normal"))
+
+            Thread(target=refresh_thread, daemon=True).start()
+
+    def export_to_csv(self):
+        """导出当前榜单数据为CSV"""
+        if self.current_list and self.current_list in self.data_cache:
+            songs = self.data_cache[self.current_list]
+            df = pd.DataFrame(songs)
+
+            # 移除歌曲ID列（用于内部使用）
+            if '歌曲ID' in df.columns:
+                df = df.drop(columns=['歌曲ID'])
+
+            filename = f"网易云音乐_{self.current_list}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            df.to_csv(filename, index=False, encoding='utf-8-sig')
+
+            messagebox.showinfo("导出成功", f"数据已导出到:\n{filename}")
+            self.update_status(f"数据已导出: {filename}", "#52c41a")
+
+    def update_status(self, message, color="#666666"):
+        """更新状态栏信息"""
+        self.status_label.config(text=message, fg=color)
+
+
+def main():
+    root = tk.Tk()
+    app = NeteaseMusicCrawlerGUI(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
